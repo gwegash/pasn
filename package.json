@@ -1,0 +1,13 @@
+{
+  "name": "sampler-node-pitch",
+  "version": "1.0.0",
+  "description": "AudioBufferSourceNode implementation with rubberband pitch shifting",
+  "main": "src/PitchShiftBufferSource.js",
+  "scripts": {
+    "build": "bash build.sh",
+    "test": "echo 'No tests yet'"
+  },
+  "keywords": ["webaudio", "audioworklet", "pitch-shifting", "rubberband"],
+  "author": "",
+  "license": "MIT"
+}

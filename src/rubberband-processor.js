@@ -34,6 +34,8 @@ class RubberBandProcessor extends AudioWorkletProcessor {
     this.outRingReadPos = 0;
     this.outRingWritePos = 0;
 
+    this.wasmModule = options.processorOptions && options.processorOptions.wasmModule;
+
     this.port.onmessage = this.handleMessage.bind(this);
     this.initWasm();
   }
@@ -48,7 +50,15 @@ class RubberBandProcessor extends AudioWorkletProcessor {
 
   async initWasm() {
     try {
-      this.mod = await createRubberBandModule();
+      const wasmModule = this.wasmModule;
+      this.mod = await createRubberBandModule({
+        instantiateWasm(imports, successCallback) {
+          WebAssembly.instantiate(wasmModule, imports).then(instance => {
+            successCallback(instance);
+          });
+          return {};
+        }
+      });
       this.api = {
         rb_new: this.mod.cwrap('rb_new', 'number', ['number', 'number']),
         rb_delete: this.mod.cwrap('rb_delete', null, ['number']),
@@ -213,19 +223,25 @@ class RubberBandProcessor extends AudioWorkletProcessor {
       iterations++;
 
       let needed = this.api.rb_get_samples_required(this.rb);
-      if (needed === 0) needed = 128;
-      needed = Math.min(needed, this.maxBlock);
+      let reachedEnd = false;
+      if (needed === 0) {
+        // RubberBand has enough internal data — retrieve output without feeding more
+        if (this.api.rb_available(this.rb) <= 0) break;
+      } else {
+        needed = Math.min(needed, this.maxBlock);
 
-      const { samples, reachedEnd } = this.readSourceSamples(channels, needed, effectiveRate);
+        const result = this.readSourceSamples(channels, needed, effectiveRate);
+        reachedEnd = result.reachedEnd;
 
-      // Copy to WASM heap (channel-sequential)
-      for (let c = 0; c < channels; c++) {
-        for (let i = 0; i < needed; i++) {
-          heapF32[inputOffset + c * needed + i] = samples[c][i];
+        // Copy to WASM heap (channel-sequential)
+        for (let c = 0; c < channels; c++) {
+          for (let i = 0; i < needed; i++) {
+            heapF32[inputOffset + c * needed + i] = result.samples[c][i];
+          }
         }
-      }
 
-      this.api.rb_process(this.rb, this.inputPtr, needed, channels, reachedEnd ? 1 : 0);
+        this.api.rb_process(this.rb, this.inputPtr, needed, channels, reachedEnd ? 1 : 0);
+      }
 
       // Retrieve available output
       const avail = this.api.rb_available(this.rb);

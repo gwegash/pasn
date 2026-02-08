@@ -11,6 +11,7 @@ RubberBandState rb_new(unsigned int sampleRate, unsigned int channels) {
         RubberBandOptionProcessRealTime |
         RubberBandOptionPitchHighConsistency |
         RubberBandOptionThreadingNever |
+        RubberBandOptionSmoothingOn |
         RubberBandOptionEngineFaster;
     return rubberband_new(sampleRate, channels, options, 1.0, 1.0);
 }

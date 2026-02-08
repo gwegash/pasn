@@ -20,13 +20,16 @@ window.PitchShiftBufferSource = class PitchShiftBufferSource extends AudioWorkle
   }
 
   static async create(context, options = {}) {
+    const response = await fetch('./build/rubberband-wasm.wasm');
+    const wasmModule = await WebAssembly.compile(await response.arrayBuffer());
+
     try {
       await context.audioWorklet.addModule('./build/processor.js');
     } catch (error) {
       console.warn('AudioWorklet module already added or failed to add:', error);
     }
 
-    return new PitchShiftBufferSource(context, options);
+    return new PitchShiftBufferSource(context, { ...options, wasmModule });
   }
 
   get buffer() {

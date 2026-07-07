@@ -30,8 +30,15 @@ class RubberBandProcessor extends AudioWorkletProcessor {
     this.outputPtr = 0;
     this.maxBlock = 2048;
 
-    this.wasmBytes = options.processorOptions && options.processorOptions.wasmBytes;
+    this.wasmModule = options.processorOptions && options.processorOptions.wasmModule;
     this.rbOptions = (options.processorOptions && options.processorOptions.rubberbandOptions) || 0;
+
+    // Node output channel count (fixed for the node's lifetime); used to size
+    // RubberBand ahead of the first render so init/prime stay off the hot path.
+    this.outputChannels = (options.outputChannelCount && options.outputChannelCount[0]) || 2;
+
+    // Reusable per-channel scratch for source reads — never allocate in process().
+    this.scratch = null;
 
     this.port.onmessage = this.handleMessage.bind(this);
     this.initWasm();
@@ -80,7 +87,9 @@ class RubberBandProcessor extends AudioWorkletProcessor {
         }
       };
 
-      const { instance } = await WebAssembly.instantiate(this.wasmBytes, imports);
+      // this.wasmModule is an already-compiled WebAssembly.Module, so
+      // instantiate() resolves to an Instance directly (no recompilation).
+      const instance = await WebAssembly.instantiate(this.wasmModule, imports);
       this.exports = instance.exports;
       this.memory = this.exports.memory;
       this.updateHeapViews();
@@ -90,9 +99,23 @@ class RubberBandProcessor extends AudioWorkletProcessor {
       }
 
       this.ready = true;
+      // If the buffer already arrived, set RubberBand up now (while silent)
+      // rather than on the first process() call.
+      this.maybeInitRubberband();
       this.port.postMessage({ type: 'ready' });
     } catch (e) {
       this.port.postMessage({ type: 'error', message: e.message });
+    }
+  }
+
+  // Initialize RubberBand once both the WASM and the source buffer are ready.
+  // Runs at ready/setBuffer time (output still silent) instead of inside the
+  // first process() call, so the allocation + priming can't glitch playback.
+  maybeInitRubberband() {
+    if (!this.ready || !this.bufferData) return;
+    const channels = Math.min(this.bufferData.length, this.outputChannels);
+    if (!this.rbInitialized || this.rbChannels !== channels) {
+      this.initRubberband(channels);
     }
   }
 
@@ -109,6 +132,11 @@ class RubberBandProcessor extends AudioWorkletProcessor {
 
     this.inputPtr = this.exports.rb_alloc(this.maxBlock * channels);
     this.outputPtr = this.exports.rb_alloc(this.maxBlock * channels);
+
+    this.scratch = [];
+    for (let c = 0; c < channels; c++) {
+      this.scratch.push(new Float32Array(this.maxBlock));
+    }
 
     this.primeRubberband();
     this.rbInitialized = true;
@@ -155,10 +183,8 @@ class RubberBandProcessor extends AudioWorkletProcessor {
   }
 
   readSourceSamples(channels, count, effectiveRate) {
-    const result = [];
-    for (let c = 0; c < channels; c++) {
-      result.push(new Float32Array(count));
-    }
+    // Reuse preallocated scratch — process() must not allocate on the audio thread.
+    const result = this.scratch;
 
     const bufLen = this.bufferData[0].length;
     let endFrame = this.loopEndFrame;
@@ -219,6 +245,9 @@ class RubberBandProcessor extends AudioWorkletProcessor {
         this.bufferSampleRate = data.sampleRate;
         this.currentFrame = 0;
         this.hasEnded = false;
+        // Set RubberBand up now (while silent) so the first render doesn't pay
+        // for allocation + priming.
+        this.maybeInitRubberband();
         break;
 
       case 'start':
@@ -318,9 +347,7 @@ class RubberBandProcessor extends AudioWorkletProcessor {
         const { samples, reachedEnd } = this.readSourceSamples(channels, needed, effectiveRate);
 
         for (let c = 0; c < channels; c++) {
-          for (let i = 0; i < needed; i++) {
-            this.heapF32[inputOffset + c * needed + i] = samples[c][i];
-          }
+          this.heapF32.set(samples[c].subarray(0, needed), inputOffset + c * needed);
         }
 
         this.exports.rb_process(this.rb, this.inputPtr, needed, channels, reachedEnd ? 1 : 0);
@@ -349,9 +376,8 @@ class RubberBandProcessor extends AudioWorkletProcessor {
     if (toRetrieve > 0) {
       this.exports.rb_retrieve(this.rb, this.outputPtr, toRetrieve, channels);
       for (let c = 0; c < channels; c++) {
-        for (let i = 0; i < toRetrieve; i++) {
-          output[c][i] = this.heapF32[outputOffset + c * toRetrieve + i];
-        }
+        const start = outputOffset + c * toRetrieve;
+        output[c].set(this.heapF32.subarray(start, start + toRetrieve));
       }
     }
     for (let c = 0; c < channels; c++) {

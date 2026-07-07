@@ -62,9 +62,31 @@ window.PitchShiftBufferSource = class PitchShiftBufferSource extends AudioWorkle
     return bits;
   }
 
+  // Compile the WASM once per page and share the compiled Module across every
+  // instance. Compiling a WebAssembly.Module is cheap to structured-clone into
+  // each worklet (the compiled code is shared), and — crucially — keeps
+  // compilation off the audio render thread.
+  static _modulePromise = null;
+
+  static getModule() {
+    if (!this._modulePromise) {
+      this._modulePromise = fetch('./build/rubberband-wasm.wasm')
+        .then(response => {
+          if (!response.ok) throw new Error(`Failed to fetch WASM: ${response.status}`);
+          return response.arrayBuffer();
+        })
+        .then(bytes => WebAssembly.compile(bytes))
+        .catch(err => {
+          // Don't cache a failure — allow a later create() to retry.
+          this._modulePromise = null;
+          throw err;
+        });
+    }
+    return this._modulePromise;
+  }
+
   static async create(context, options = {}) {
-    const response = await fetch('./build/rubberband-wasm.wasm');
-    const wasmBytes = await response.arrayBuffer();
+    const wasmModule = await this.getModule();
 
     try {
       await context.audioWorklet.addModule('./build/processor.js');
@@ -74,7 +96,7 @@ window.PitchShiftBufferSource = class PitchShiftBufferSource extends AudioWorkle
 
     const rubberbandOptions = this.buildOptions(options);
 
-    return new PitchShiftBufferSource(context, { ...options, wasmBytes, rubberbandOptions });
+    return new PitchShiftBufferSource(context, { ...options, wasmModule, rubberbandOptions });
   }
 
   get buffer() {

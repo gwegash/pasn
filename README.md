@@ -111,4 +111,10 @@ This will:
 
 ## License
 
-MIT
+GPL-2.0-or-later. See [LICENSE](LICENSE).
+
+This project statically includes the [Rubber Band Library](https://breakfastquay.com/rubberband/)
+(`rubberband/single/RubberBandSingle.cpp`), which is licensed under the GNU General
+Public License version 2 or later. Because the combined work links Rubber Band's GPL
+code, redistribution is governed by the GPL. If you need to distribute under other
+terms, Rubber Band offers a separate commercial licence from Particular Programs Ltd.

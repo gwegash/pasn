@@ -10,13 +10,11 @@ class RubberBandProcessor extends AudioWorkletProcessor {
 
     this.rb = null;
     this.bufferData = null;
-    this.bufferSampleRate = 0;
     this.currentFrame = 0;
     this.isPlaying = false;
     this.hasEnded = false;
     this.startWhen = 0;
     this.stopWhen = -1;
-    this.startOffset = 0;
 
     this.loop = false;
     this.loopStartFrame = 0;
@@ -33,11 +31,10 @@ class RubberBandProcessor extends AudioWorkletProcessor {
     this.wasmModule = options.processorOptions && options.processorOptions.wasmModule;
     this.rbOptions = (options.processorOptions && options.processorOptions.rubberbandOptions) || 0;
 
-    // Node output channel count (fixed for the node's lifetime); used to size
-    // RubberBand ahead of the first render so init/prime stay off the hot path.
+    // Used to size RubberBand ahead of the first render, off the hot path.
     this.outputChannels = (options.outputChannelCount && options.outputChannelCount[0]) || 2;
 
-    // Reusable per-channel scratch for source reads — never allocate in process().
+    // Reusable per-channel source-read buffers — process() never allocates.
     this.scratch = null;
 
     this.port.onmessage = this.handleMessage.bind(this);
@@ -87,8 +84,7 @@ class RubberBandProcessor extends AudioWorkletProcessor {
         }
       };
 
-      // this.wasmModule is an already-compiled WebAssembly.Module, so
-      // instantiate() resolves to an Instance directly (no recompilation).
+      // wasmModule is already compiled, so this instantiates without recompiling.
       const instance = await WebAssembly.instantiate(this.wasmModule, imports);
       this.exports = instance.exports;
       this.memory = this.exports.memory;
@@ -99,8 +95,6 @@ class RubberBandProcessor extends AudioWorkletProcessor {
       }
 
       this.ready = true;
-      // If the buffer already arrived, set RubberBand up now (while silent)
-      // rather than on the first process() call.
       this.maybeInitRubberband();
       this.port.postMessage({ type: 'ready' });
     } catch (e) {
@@ -108,9 +102,8 @@ class RubberBandProcessor extends AudioWorkletProcessor {
     }
   }
 
-  // Initialize RubberBand once both the WASM and the source buffer are ready.
-  // Runs at ready/setBuffer time (output still silent) instead of inside the
-  // first process() call, so the allocation + priming can't glitch playback.
+  // Set up RubberBand once WASM and the buffer are ready, at ready/setBuffer
+  // time rather than in the first process() call, so priming can't glitch audio.
   maybeInitRubberband() {
     if (!this.ready || !this.bufferData) return;
     const channels = Math.min(this.bufferData.length, this.outputChannels);
@@ -242,11 +235,8 @@ class RubberBandProcessor extends AudioWorkletProcessor {
     switch (type) {
       case 'setBuffer':
         this.bufferData = data.channelData;
-        this.bufferSampleRate = data.sampleRate;
         this.currentFrame = 0;
         this.hasEnded = false;
-        // Set RubberBand up now (while silent) so the first render doesn't pay
-        // for allocation + priming.
         this.maybeInitRubberband();
         break;
 
@@ -255,8 +245,7 @@ class RubberBandProcessor extends AudioWorkletProcessor {
         this.hasEnded = false;
         this.sourceExhausted = false;
         this.startWhen = data.when || 0;
-        this.startOffset = data.offset || 0;
-        this.currentFrame = this.startOffset * sampleRate;
+        this.currentFrame = (data.offset || 0) * sampleRate;
         this.stopWhen = data.duration !== undefined
           ? (this.startWhen || currentTime) + data.duration
           : -1;
@@ -325,9 +314,7 @@ class RubberBandProcessor extends AudioWorkletProcessor {
     const detune = parameters.detune[0] || 0;
     const transpose = parameters.transpose[0] || 0;
 
-    // detune (cents) and transpose (semitones) both shift pitch independently
-    // of tempo, so they go through RubberBand. playbackRate alone drives the
-    // source read rate (speed).
+    // playbackRate drives the read rate (speed); detune + transpose are pitch-only.
     const effectiveRate = playbackRate;
     const pitchScale = Math.pow(2, transpose / 12 + detune / 1200);
 

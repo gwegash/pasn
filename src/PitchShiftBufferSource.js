@@ -7,7 +7,6 @@ window.PitchShiftBufferSource = class PitchShiftBufferSource extends AudioWorkle
       processorOptions: options
     });
 
-    this._context = context;
     this._buffer = null;
     this._loop = false;
     this._loopStart = 0;
@@ -62,10 +61,8 @@ window.PitchShiftBufferSource = class PitchShiftBufferSource extends AudioWorkle
     return bits;
   }
 
-  // Compile the WASM once per page and share the compiled Module across every
-  // instance. Compiling a WebAssembly.Module is cheap to structured-clone into
-  // each worklet (the compiled code is shared), and — crucially — keeps
-  // compilation off the audio render thread.
+  // Compile the WASM once per page; the compiled Module is shared across every
+  // instance and stays off the audio render thread.
   static _modulePromise = null;
 
   static getModule() {
@@ -131,12 +128,7 @@ window.PitchShiftBufferSource = class PitchShiftBufferSource extends AudioWorkle
     return this.parameters.get('transpose');
   }
 
-  get loop() {
-    return this._loop;
-  }
-
-  set loop(value) {
-    this._loop = Boolean(value);
+  _sendLoop() {
     this.port.postMessage({
       type: 'setLoop',
       data: {
@@ -148,6 +140,15 @@ window.PitchShiftBufferSource = class PitchShiftBufferSource extends AudioWorkle
     });
   }
 
+  get loop() {
+    return this._loop;
+  }
+
+  set loop(value) {
+    this._loop = Boolean(value);
+    this._sendLoop();
+  }
+
   get loopStart() {
     return this._loopStart;
   }
@@ -157,17 +158,7 @@ window.PitchShiftBufferSource = class PitchShiftBufferSource extends AudioWorkle
       throw new RangeError('loopStart must be a non-negative number');
     }
     this._loopStart = value;
-    if (this._loop) {
-      this.port.postMessage({
-        type: 'setLoop',
-        data: {
-          loop: this._loop,
-          loopStart: this._loopStart,
-          loopEnd: this._loopEnd,
-          loopFade: this._loopFade
-        }
-      });
-    }
+    if (this._loop) this._sendLoop();
   }
 
   get loopEnd() {
@@ -179,17 +170,7 @@ window.PitchShiftBufferSource = class PitchShiftBufferSource extends AudioWorkle
       throw new RangeError('loopEnd must be a non-negative number');
     }
     this._loopEnd = value;
-    if (this._loop) {
-      this.port.postMessage({
-        type: 'setLoop',
-        data: {
-          loop: this._loop,
-          loopStart: this._loopStart,
-          loopEnd: this._loopEnd,
-          loopFade: this._loopFade
-        }
-      });
-    }
+    if (this._loop) this._sendLoop();
   }
 
   get loopFade() {
@@ -201,17 +182,7 @@ window.PitchShiftBufferSource = class PitchShiftBufferSource extends AudioWorkle
       throw new RangeError('loopFade must be a non-negative number');
     }
     this._loopFade = value;
-    if (this._loop) {
-      this.port.postMessage({
-        type: 'setLoop',
-        data: {
-          loop: this._loop,
-          loopStart: this._loopStart,
-          loopEnd: this._loopEnd,
-          loopFade: this._loopFade
-        }
-      });
-    }
+    if (this._loop) this._sendLoop();
   }
 
   start(when = 0, offset = 0, duration) {
@@ -270,9 +241,5 @@ window.PitchShiftBufferSource = class PitchShiftBufferSource extends AudioWorkle
         console.error('Processor error:', event.data.message);
         break;
     }
-  }
-
-  disconnect() {
-    super.disconnect();
   }
 };

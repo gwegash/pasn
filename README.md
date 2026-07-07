@@ -15,8 +15,12 @@ and the `ended` event work as usual.
 
 ```javascript
 import { PitchShiftBufferSource } from "pitch-shift-buffer-source"
+
 const ctx = new AudioContext();
-const source = await PitchShiftBufferSource.create(ctx);
+await PitchShiftBufferSource.init(ctx);
+
+// then construct synchronously, just like AudioBufferSourceNode
+const source = new PitchShiftBufferSource(ctx);
 
 const buf = await ctx.decodeAudioData(await (await fetch('audio.wav')).arrayBuffer());
 source.buffer = buf;
@@ -26,10 +30,10 @@ source.connect(ctx.destination);
 source.start();
 ```
 
-`create()` takes options to pick the Rubber Band algorithm at construction time:
+Pick the Rubber Band algorithm at construction time:
 
 ```javascript
-PitchShiftBufferSource.create(ctx, { engine: 'finer', formant: 'preserved' });
+const source = new PitchShiftBufferSource(ctx, { engine: 'finer', formant: 'preserved' });
 ```
 
 Options (each fixed at construction): `engine`, `formant`, `pitchMode`,

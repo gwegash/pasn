@@ -1,10 +1,31 @@
+// Replaced at bundle time by esbuild's `define` with the inlined assets. Left
+// undefined in the raw source, where init() fetches them by URL instead.
+// (typeof on an undeclared identifier is safe and yields 'undefined'.)
+const INLINE_PROCESSOR = typeof PSB_INLINE_PROCESSOR !== 'undefined' ? PSB_INLINE_PROCESSOR : null;
+const INLINE_WASM_B64 = typeof PSB_INLINE_WASM !== 'undefined' ? PSB_INLINE_WASM : null;
+
+function base64ToBytes(b64) {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
 export class PitchShiftBufferSource extends AudioWorkletNode {
   constructor(context, options = {}) {
+    const entry = PitchShiftBufferSource._ready.get(context);
+    if (!entry || !entry.module) {
+      throw new Error(
+        'PitchShiftBufferSource: await PitchShiftBufferSource.init(context) before constructing.');
+    }
+
+    const rubberbandOptions = PitchShiftBufferSource.buildOptions(options);
+
     super(context, 'pitch-shift-processor', {
       numberOfInputs: 0,
       numberOfOutputs: 1,
       outputChannelCount: [2],
-      processorOptions: options
+      processorOptions: { wasmModule: entry.module, rubberbandOptions }
     });
 
     this._buffer = null;
@@ -61,27 +82,32 @@ export class PitchShiftBufferSource extends AudioWorkletNode {
     return bits;
   }
 
-  // Default asset locations, resolved relative to this module so they work
-  // wherever the package is installed. Override via create()'s wasmUrl /
-  // processorUrl options if you relocate the build output.
-  static defaultWasmUrl = new URL('../build/rubberband-wasm.wasm', import.meta.url);
-  static defaultProcessorUrl = new URL('../build/processor.js', import.meta.url);
+  // Default asset locations for the un-bundled build, resolved relative to this
+  // module. Lazy getters so the bundled build (which inlines both assets) never
+  // touches import.meta.url. Override via init()'s wasmUrl / processorUrl.
+  static get defaultWasmUrl() { return new URL('../build/rubberband-wasm.wasm', import.meta.url); }
+  static get defaultProcessorUrl() { return new URL('../build/processor.js', import.meta.url); }
 
-  // Compile the WASM once per URL; the compiled Module is shared across every
-  // instance and stays off the audio render thread.
+  // Compile the WASM once (per source); the compiled Module is shared across
+  // every instance and stays off the audio render thread. An explicit
+  // overrideUrl wins; otherwise the inlined wasm is used, else the default URL.
   static _modules = new Map();
 
-  static getModule(url) {
-    const key = String(url);
+  static getModule(overrideUrl) {
+    const useInline = !overrideUrl && INLINE_WASM_B64;
+    const url = overrideUrl || (useInline ? null : this.defaultWasmUrl);
+    const key = useInline ? 'inline' : String(url);
     if (!this._modules.has(key)) {
-      const promise = fetch(url)
-        .then(response => {
-          if (!response.ok) throw new Error(`Failed to fetch WASM: ${response.status}`);
-          return response.arrayBuffer();
-        })
-        .then(bytes => WebAssembly.compile(bytes))
+      const bytes = useInline
+        ? Promise.resolve(base64ToBytes(INLINE_WASM_B64))
+        : fetch(url).then(response => {
+            if (!response.ok) throw new Error(`Failed to fetch WASM: ${response.status}`);
+            return response.arrayBuffer();
+          });
+      const promise = bytes
+        .then(b => WebAssembly.compile(b))
         .catch(err => {
-          // Don't cache a failure — allow a later create() to retry.
+          // Don't cache a failure — allow a later init() to retry.
           this._modules.delete(key);
           throw err;
         });
@@ -90,24 +116,47 @@ export class PitchShiftBufferSource extends AudioWorkletNode {
     return this._modules.get(key);
   }
 
-  static async create(context, options = {}) {
-    const {
-      wasmUrl = this.defaultWasmUrl,
-      processorUrl = this.defaultProcessorUrl,
-      ...rbOptions
-    } = options;
+  // Per-context readiness: context -> { module, promise }. The compiled Module
+  // is stored so the constructor can run synchronously once init() has resolved.
+  static _ready = new WeakMap();
 
-    const wasmModule = await this.getModule(wasmUrl);
+  // Prepare a context for synchronous construction: compile the WASM and
+  // register the worklet processor. Await this once, near `new AudioContext()`;
+  // afterwards `new PitchShiftBufferSource(context)` works synchronously.
+  // Idempotent per context; concurrent/repeat calls share one promise.
+  static init(context, options = {}) {
+    let entry = this._ready.get(context);
+    if (!entry) {
+      entry = { module: null, promise: null };
+      entry.promise = (async () => {
+        const wasmModule = await this.getModule(options.wasmUrl);
 
-    try {
-      await context.audioWorklet.addModule(processorUrl);
-    } catch (error) {
-      console.warn('AudioWorklet module already added or failed to add:', error);
+        // Explicit URL wins; otherwise register the inlined processor via a
+        // blob URL, else fall back to the default file URL.
+        let processorUrl = options.processorUrl;
+        let blobUrl = null;
+        if (!processorUrl && INLINE_PROCESSOR) {
+          blobUrl = URL.createObjectURL(
+            new Blob([INLINE_PROCESSOR], { type: 'text/javascript' }));
+          processorUrl = blobUrl;
+        } else if (!processorUrl) {
+          processorUrl = this.defaultProcessorUrl;
+        }
+
+        try {
+          await context.audioWorklet.addModule(processorUrl);
+        } finally {
+          if (blobUrl) URL.revokeObjectURL(blobUrl);
+        }
+
+        entry.module = wasmModule;
+        return entry;
+      })();
+      // On failure, forget it so a later init() can retry.
+      entry.promise.catch(() => this._ready.delete(context));
+      this._ready.set(context, entry);
     }
-
-    const rubberbandOptions = this.buildOptions(rbOptions);
-
-    return new PitchShiftBufferSource(context, { wasmModule, rubberbandOptions });
+    return entry.promise;
   }
 
   get buffer() {

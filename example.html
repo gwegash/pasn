@@ -148,6 +148,7 @@
         const initAudioContext = async () => {
             if (!audioContext) {
                 audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                await PitchShiftBufferSource.init(audioContext);
 
                 if (audioContext.state === 'suspended') {
                     await audioContext.resume();
@@ -172,8 +173,9 @@
             }
         };
 
-        const createBufferSource = async () => {
-            bufferSource = await PitchShiftBufferSource.create(audioContext, {
+        const createBufferSource = () => {
+            // Synchronous construction — init(audioContext) already ran above.
+            bufferSource = new PitchShiftBufferSource(audioContext, {
                 engine: elements.engine.value,
                 formant: elements.formant.value
             });
@@ -211,7 +213,7 @@
         elements.playBtn.addEventListener('click', async () => {
             try {
                 await initAudioContext();
-                await createBufferSource();
+                createBufferSource();
                 updateParameters();
 
                 const offset = parseFloat(elements.startOffset.value) || 0;

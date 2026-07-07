@@ -1,24 +1,32 @@
 {
   "name": "pitch-shift-buffer-source",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "A pitch-shifting AudioBufferSourceNode built with Rubber Band",
   "type": "module",
-  "main": "src/PitchShiftBufferSource.js",
+  "main": "build/pitch-shift-buffer-source.bundled.js",
   "exports": {
-    ".": "./src/PitchShiftBufferSource.js"
+    ".": "./build/pitch-shift-buffer-source.bundled.js",
+    "./url": "./src/PitchShiftBufferSource.js"
   },
   "files": [
     "src/",
+    "build/pitch-shift-buffer-source.bundled.js",
     "build/processor.js",
     "build/rubberband-wasm.wasm",
     "build.sh",
+    "build-bundle.mjs",
     "example.html",
     "LICENSE",
     "README.md"
   ],
   "scripts": {
-    "build": "bash build.sh",
+    "build": "bash build.sh && node build-bundle.mjs",
+    "build:wasm": "bash build.sh",
+    "build:bundle": "node build-bundle.mjs",
     "test": "echo 'No tests yet'"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.0"
   },
   "keywords": ["webaudio", "audioworklet", "pitch-shifting", "rubberband", "audiobuffersourcenode"],
   "author": "George Ash",

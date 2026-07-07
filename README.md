@@ -14,6 +14,7 @@ and the `ended` event work as usual.
 ## Usage
 
 ```javascript
+import { PitchShiftBufferSource } from "pasn"
 const ctx = new AudioContext();
 const source = await PitchShiftBufferSource.create(ctx);
 

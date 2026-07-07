@@ -1,13 +1,34 @@
 {
-  "name": "sampler-node-pitch",
+  "name": "pasn",
   "version": "1.0.0",
-  "description": "AudioBufferSourceNode implementation with rubberband pitch shifting",
+  "description": "A pitch-shifting AudioBufferSourceNode built with Rubber Band",
+  "type": "module",
   "main": "src/PitchShiftBufferSource.js",
+  "exports": {
+    ".": "./src/PitchShiftBufferSource.js"
+  },
+  "files": [
+    "src/",
+    "build/processor.js",
+    "build/rubberband-wasm.wasm",
+    "build.sh",
+    "example.html",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "build": "bash build.sh",
     "test": "echo 'No tests yet'"
   },
-  "keywords": ["webaudio", "audioworklet", "pitch-shifting", "rubberband"],
-  "author": "",
-  "license": "GPL-2.0-or-later"
+  "keywords": ["webaudio", "audioworklet", "pitch-shifting", "rubberband", "audiobuffersourcenode"],
+  "author": "George Ash",
+  "license": "GPL-2.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gwegash/pasn.git"
+  },
+  "homepage": "https://github.com/gwegash/pasn#readme",
+  "bugs": {
+    "url": "https://github.com/gwegash/pasn/issues"
+  }
 }

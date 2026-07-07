@@ -1,4 +1,4 @@
-window.PitchShiftBufferSource = class PitchShiftBufferSource extends AudioWorkletNode {
+export class PitchShiftBufferSource extends AudioWorkletNode {
   constructor(context, options = {}) {
     super(context, 'pitch-shift-processor', {
       numberOfInputs: 0,
@@ -61,13 +61,20 @@ window.PitchShiftBufferSource = class PitchShiftBufferSource extends AudioWorkle
     return bits;
   }
 
-  // Compile the WASM once per page; the compiled Module is shared across every
-  // instance and stays off the audio render thread.
-  static _modulePromise = null;
+  // Default asset locations, resolved relative to this module so they work
+  // wherever the package is installed. Override via create()'s wasmUrl /
+  // processorUrl options if you relocate the build output.
+  static defaultWasmUrl = new URL('../build/rubberband-wasm.wasm', import.meta.url);
+  static defaultProcessorUrl = new URL('../build/processor.js', import.meta.url);
 
-  static getModule() {
-    if (!this._modulePromise) {
-      this._modulePromise = fetch('./build/rubberband-wasm.wasm')
+  // Compile the WASM once per URL; the compiled Module is shared across every
+  // instance and stays off the audio render thread.
+  static _modules = new Map();
+
+  static getModule(url) {
+    const key = String(url);
+    if (!this._modules.has(key)) {
+      const promise = fetch(url)
         .then(response => {
           if (!response.ok) throw new Error(`Failed to fetch WASM: ${response.status}`);
           return response.arrayBuffer();
@@ -75,25 +82,32 @@ window.PitchShiftBufferSource = class PitchShiftBufferSource extends AudioWorkle
         .then(bytes => WebAssembly.compile(bytes))
         .catch(err => {
           // Don't cache a failure — allow a later create() to retry.
-          this._modulePromise = null;
+          this._modules.delete(key);
           throw err;
         });
+      this._modules.set(key, promise);
     }
-    return this._modulePromise;
+    return this._modules.get(key);
   }
 
   static async create(context, options = {}) {
-    const wasmModule = await this.getModule();
+    const {
+      wasmUrl = this.defaultWasmUrl,
+      processorUrl = this.defaultProcessorUrl,
+      ...rbOptions
+    } = options;
+
+    const wasmModule = await this.getModule(wasmUrl);
 
     try {
-      await context.audioWorklet.addModule('./build/processor.js');
+      await context.audioWorklet.addModule(processorUrl);
     } catch (error) {
       console.warn('AudioWorklet module already added or failed to add:', error);
     }
 
-    const rubberbandOptions = this.buildOptions(options);
+    const rubberbandOptions = this.buildOptions(rbOptions);
 
-    return new PitchShiftBufferSource(context, { ...options, wasmModule, rubberbandOptions });
+    return new PitchShiftBufferSource(context, { wasmModule, rubberbandOptions });
   }
 
   get buffer() {
@@ -242,4 +256,4 @@ window.PitchShiftBufferSource = class PitchShiftBufferSource extends AudioWorkle
         break;
     }
   }
-};
+}

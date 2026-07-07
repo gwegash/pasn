@@ -1,5 +1,5 @@
 {
-  "name": "pasn",
+  "name": "pitch-shift-buffer-source",
   "version": "1.0.0",
   "description": "A pitch-shifting AudioBufferSourceNode built with Rubber Band",
   "type": "module",

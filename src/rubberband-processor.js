@@ -3,10 +3,12 @@ class RubberBandProcessor extends AudioWorkletProcessor {
     super();
 
     this.ready = false;
-    this.rb = null;
-    this.mod = null;
-    this.api = null;
+    this.exports = null;
+    this.memory = null;
+    this.heapU8 = null;
+    this.heapF32 = null;
 
+    this.rb = null;
     this.bufferData = null;
     this.bufferSampleRate = 0;
     this.currentFrame = 0;
@@ -19,6 +21,7 @@ class RubberBandProcessor extends AudioWorkletProcessor {
     this.loop = false;
     this.loopStartFrame = 0;
     this.loopEndFrame = 0;
+    this.loopFadeFrames = 0;
 
     this.rbChannels = 0;
     this.rbInitialized = false;
@@ -27,7 +30,8 @@ class RubberBandProcessor extends AudioWorkletProcessor {
     this.outputPtr = 0;
     this.maxBlock = 2048;
 
-    this.wasmModule = options.processorOptions && options.processorOptions.wasmModule;
+    this.wasmBytes = options.processorOptions && options.processorOptions.wasmBytes;
+    this.rbOptions = (options.processorOptions && options.processorOptions.rubberbandOptions) || 0;
 
     this.port.onmessage = this.handleMessage.bind(this);
     this.initWasm();
@@ -41,32 +45,50 @@ class RubberBandProcessor extends AudioWorkletProcessor {
     ];
   }
 
+  updateHeapViews() {
+    this.heapU8 = new Uint8Array(this.memory.buffer);
+    this.heapF32 = new Float32Array(this.memory.buffer);
+  }
+
   async initWasm() {
     try {
-      const wasmModule = this.wasmModule;
-      this.mod = await createRubberBandModule({
-        instantiateWasm(imports, successCallback) {
-          WebAssembly.instantiate(wasmModule, imports).then(instance => {
-            successCallback(instance);
-          });
-          return {};
+      const self = this;
+      const imports = {
+        env: {
+          __assert_fail: () => { throw new Error('assert failed'); },
+          __cxa_throw: () => { throw new Error('C++ exception'); },
+          abort: () => { throw new Error('abort'); },
+          emscripten_date_now: () => Date.now(),
+          emscripten_memcpy_js: (dest, src, num) => self.heapU8.copyWithin(dest, src, src + num),
+          emscripten_resize_heap: (requestedSize) => {
+            const pages = Math.ceil((requestedSize - self.memory.buffer.byteLength) / 65536);
+            if (pages > 0) {
+              try { self.memory.grow(pages); } catch (e) { return 0; }
+              self.updateHeapViews();
+            }
+            return 1;
+          },
+          strftime_l: () => 0,
+        },
+        wasi_snapshot_preview1: {
+          environ_get: () => 0,
+          environ_sizes_get: () => 0,
+          fd_close: () => 0,
+          fd_read: () => 0,
+          fd_seek: () => 0,
+          fd_write: () => 0,
         }
-      });
-      this.api = {
-        rb_new: this.mod.cwrap('rb_new', 'number', ['number', 'number']),
-        rb_delete: this.mod.cwrap('rb_delete', null, ['number']),
-        rb_set_pitch_scale: this.mod.cwrap('rb_set_pitch_scale', null, ['number', 'number']),
-        rb_get_samples_required: this.mod.cwrap('rb_get_samples_required', 'number', ['number']),
-        rb_get_preferred_start_pad: this.mod.cwrap('rb_get_preferred_start_pad', 'number', ['number']),
-        rb_get_start_delay: this.mod.cwrap('rb_get_start_delay', 'number', ['number']),
-        rb_set_max_process_size: this.mod.cwrap('rb_set_max_process_size', null, ['number', 'number']),
-        rb_process: this.mod.cwrap('rb_process', null, ['number', 'number', 'number', 'number', 'number']),
-        rb_available: this.mod.cwrap('rb_available', 'number', ['number']),
-        rb_retrieve: this.mod.cwrap('rb_retrieve', 'number', ['number', 'number', 'number', 'number']),
-        rb_reset: this.mod.cwrap('rb_reset', null, ['number']),
-        rb_alloc: this.mod.cwrap('rb_alloc', 'number', ['number']),
-        rb_free: this.mod.cwrap('rb_free', null, ['number']),
       };
+
+      const { instance } = await WebAssembly.instantiate(this.wasmBytes, imports);
+      this.exports = instance.exports;
+      this.memory = this.exports.memory;
+      this.updateHeapViews();
+
+      if (this.exports.__wasm_call_ctors) {
+        this.exports.__wasm_call_ctors();
+      }
+
       this.ready = true;
       this.port.postMessage({ type: 'ready' });
     } catch (e) {
@@ -76,17 +98,17 @@ class RubberBandProcessor extends AudioWorkletProcessor {
 
   initRubberband(channels) {
     if (this.rb) {
-      this.api.rb_delete(this.rb);
-      if (this.inputPtr) this.api.rb_free(this.inputPtr);
-      if (this.outputPtr) this.api.rb_free(this.outputPtr);
+      this.exports.rb_delete(this.rb);
+      if (this.inputPtr) this.exports.rb_free(this.inputPtr);
+      if (this.outputPtr) this.exports.rb_free(this.outputPtr);
     }
 
     this.rbChannels = channels;
-    this.rb = this.api.rb_new(sampleRate, channels);
-    this.api.rb_set_max_process_size(this.rb, this.maxBlock);
+    this.rb = this.exports.rb_new(sampleRate, channels, this.rbOptions);
+    this.exports.rb_set_max_process_size(this.rb, this.maxBlock);
 
-    this.inputPtr = this.api.rb_alloc(this.maxBlock * channels);
-    this.outputPtr = this.api.rb_alloc(this.maxBlock * channels);
+    this.inputPtr = this.exports.rb_alloc(this.maxBlock * channels);
+    this.outputPtr = this.exports.rb_alloc(this.maxBlock * channels);
 
     this.primeRubberband();
     this.rbInitialized = true;
@@ -94,37 +116,42 @@ class RubberBandProcessor extends AudioWorkletProcessor {
 
   primeRubberband() {
     const channels = this.rbChannels;
-    const heapF32 = this.mod.HEAPF32;
     const inputOffset = this.inputPtr >> 2;
 
-    // Zero the input buffer — reused for all silent feeds below
     for (let i = 0; i < this.maxBlock * channels; i++) {
-      heapF32[inputOffset + i] = 0;
+      this.heapF32[inputOffset + i] = 0;
     }
 
-    // Feed silent padding to prime RubberBand's internal buffers
-    let remaining = this.api.rb_get_preferred_start_pad(this.rb);
+    let remaining = this.exports.rb_get_preferred_start_pad(this.rb);
     while (remaining > 0) {
       const chunk = Math.min(remaining, this.maxBlock);
-      this.api.rb_process(this.rb, this.inputPtr, chunk, channels, 0);
+      this.exports.rb_process(this.rb, this.inputPtr, chunk, channels, 0);
       remaining -= chunk;
     }
 
-    // Keep feeding silence until enough output exists to discard the full start delay
-    const startDelay = this.api.rb_get_start_delay(this.rb);
+    const startDelay = this.exports.rb_get_start_delay(this.rb);
     let safety = 0;
-    while (this.api.rb_available(this.rb) < startDelay && safety < 64) {
+    while (this.exports.rb_available(this.rb) < startDelay && safety < 64) {
       safety++;
-      const needed = Math.min(this.api.rb_get_samples_required(this.rb), this.maxBlock);
+      const needed = Math.min(this.exports.rb_get_samples_required(this.rb), this.maxBlock);
       if (needed === 0) break;
-      this.api.rb_process(this.rb, this.inputPtr, needed, channels, 0);
+      this.exports.rb_process(this.rb, this.inputPtr, needed, channels, 0);
     }
 
-    // Discard start delay so first real output aligns with source
-    const toDiscard = Math.min(startDelay, this.api.rb_available(this.rb));
+    const toDiscard = Math.min(startDelay, this.exports.rb_available(this.rb));
     if (toDiscard > 0) {
-      this.api.rb_retrieve(this.rb, this.outputPtr, toDiscard, channels);
+      this.exports.rb_retrieve(this.rb, this.outputPtr, toDiscard, channels);
     }
+  }
+
+  sampleAt(frame, channel) {
+    const chData = channel < this.bufferData.length
+      ? this.bufferData[channel] : this.bufferData[0];
+    const intFrame = Math.floor(frame);
+    const frac = frame - intFrame;
+    const s0 = intFrame < chData.length ? chData[intFrame] : 0;
+    const s1 = (intFrame + 1) < chData.length ? chData[intFrame + 1] : 0;
+    return s0 + (s1 - s0) * frac;
   }
 
   readSourceSamples(channels, count, effectiveRate) {
@@ -139,13 +166,19 @@ class RubberBandProcessor extends AudioWorkletProcessor {
       endFrame = bufLen;
     }
 
+    const loopLen = endFrame - this.loopStartFrame;
+    const fadeFrames = (this.loop && this.loopFadeFrames > 0)
+      ? Math.min(this.loopFadeFrames, loopLen) : 0;
+    const fadeStart = endFrame - fadeFrames;
+
     let reachedEnd = false;
 
     for (let i = 0; i < count; i++) {
       if (this.currentFrame >= endFrame) {
         if (this.loop) {
-          this.currentFrame = this.loopStartFrame + (this.currentFrame - endFrame);
-          if (this.currentFrame >= endFrame) this.currentFrame = this.loopStartFrame;
+          this.currentFrame = this.loopStartFrame + fadeFrames
+            + (this.currentFrame - endFrame);
+          if (this.currentFrame >= endFrame) this.currentFrame = this.loopStartFrame + fadeFrames;
         } else {
           reachedEnd = true;
           for (let j = i; j < count; j++) {
@@ -157,14 +190,18 @@ class RubberBandProcessor extends AudioWorkletProcessor {
         }
       }
 
-      const intFrame = Math.floor(this.currentFrame);
-      const frac = this.currentFrame - intFrame;
-
       for (let c = 0; c < channels; c++) {
-        const chData = c < this.bufferData.length ? this.bufferData[c] : this.bufferData[0];
-        const s0 = intFrame < chData.length ? chData[intFrame] : 0;
-        const s1 = (intFrame + 1) < chData.length ? chData[intFrame + 1] : 0;
-        result[c][i] = s0 + (s1 - s0) * frac;
+        let sample = this.sampleAt(this.currentFrame, c);
+
+        if (fadeFrames > 0 && this.currentFrame >= fadeStart) {
+          const fadePos = this.currentFrame - fadeStart;
+          const t = fadePos / fadeFrames;
+          const crossFrame = this.loopStartFrame + fadePos;
+          const crossSample = this.sampleAt(crossFrame, c);
+          sample = sample * (1 - t) + crossSample * t;
+        }
+
+        result[c][i] = sample;
       }
 
       this.currentFrame += effectiveRate;
@@ -195,7 +232,7 @@ class RubberBandProcessor extends AudioWorkletProcessor {
           ? (this.startWhen || currentTime) + data.duration
           : -1;
         if (this.rb) {
-          this.api.rb_reset(this.rb);
+          this.exports.rb_reset(this.rb);
           this.primeRubberband();
         }
         break;
@@ -212,6 +249,7 @@ class RubberBandProcessor extends AudioWorkletProcessor {
         this.loop = data.loop;
         this.loopStartFrame = Math.floor((data.loopStart || 0) * sampleRate);
         this.loopEndFrame = Math.floor((data.loopEnd || 0) * sampleRate);
+        this.loopFadeFrames = Math.floor((data.loopFade || 0) * sampleRate);
         break;
     }
   }
@@ -230,7 +268,6 @@ class RubberBandProcessor extends AudioWorkletProcessor {
       return true;
     }
 
-    // Check scheduled start
     if (this.startWhen > currentTime) {
       for (let c = 0; c < outChannels; c++) {
         output[c].fill(0);
@@ -238,7 +275,6 @@ class RubberBandProcessor extends AudioWorkletProcessor {
       return true;
     }
 
-    // Check scheduled stop
     if (this.stopWhen >= 0 && currentTime >= this.stopWhen) {
       this.isPlaying = false;
       if (!this.hasEnded) {
@@ -260,34 +296,34 @@ class RubberBandProcessor extends AudioWorkletProcessor {
     const detune = parameters.detune[0] || 0;
     const transpose = parameters.transpose[0] || 0;
 
-    const detuneRatio = Math.pow(2, detune / 1200);
-    const effectiveRate = playbackRate * detuneRatio;
-    const pitchScale = Math.pow(2, transpose / 12);
+    // detune (cents) and transpose (semitones) both shift pitch independently
+    // of tempo, so they go through RubberBand. playbackRate alone drives the
+    // source read rate (speed).
+    const effectiveRate = playbackRate;
+    const pitchScale = Math.pow(2, transpose / 12 + detune / 1200);
 
-    this.api.rb_set_pitch_scale(this.rb, pitchScale);
+    this.exports.rb_set_pitch_scale(this.rb, pitchScale);
 
-    const heapF32 = this.mod.HEAPF32;
     const inputOffset = this.inputPtr >> 2;
     const outputOffset = this.outputPtr >> 2;
 
-    // Feed RubberBand until it has enough output for this frame
     if (!this.sourceExhausted) {
       let safety = 0;
-      while (this.api.rb_available(this.rb) < frameCount && safety < 32) {
+      while (this.exports.rb_available(this.rb) < frameCount && safety < 32) {
         safety++;
 
-        const needed = Math.min(this.api.rb_get_samples_required(this.rb), this.maxBlock);
+        const needed = Math.min(this.exports.rb_get_samples_required(this.rb), this.maxBlock);
         if (needed === 0) break;
 
         const { samples, reachedEnd } = this.readSourceSamples(channels, needed, effectiveRate);
 
         for (let c = 0; c < channels; c++) {
           for (let i = 0; i < needed; i++) {
-            heapF32[inputOffset + c * needed + i] = samples[c][i];
+            this.heapF32[inputOffset + c * needed + i] = samples[c][i];
           }
         }
 
-        this.api.rb_process(this.rb, this.inputPtr, needed, channels, reachedEnd ? 1 : 0);
+        this.exports.rb_process(this.rb, this.inputPtr, needed, channels, reachedEnd ? 1 : 0);
 
         if (reachedEnd && !this.loop) {
           this.sourceExhausted = true;
@@ -296,8 +332,7 @@ class RubberBandProcessor extends AudioWorkletProcessor {
       }
     }
 
-    // Retrieve output directly — drain whatever RubberBand has
-    const avail = this.api.rb_available(this.rb);
+    const avail = this.exports.rb_available(this.rb);
     if (avail <= 0 && this.sourceExhausted) {
       if (!this.hasEnded) {
         this.hasEnded = true;
@@ -312,21 +347,19 @@ class RubberBandProcessor extends AudioWorkletProcessor {
 
     const toRetrieve = Math.min(avail, frameCount);
     if (toRetrieve > 0) {
-      this.api.rb_retrieve(this.rb, this.outputPtr, toRetrieve, channels);
+      this.exports.rb_retrieve(this.rb, this.outputPtr, toRetrieve, channels);
       for (let c = 0; c < channels; c++) {
         for (let i = 0; i < toRetrieve; i++) {
-          output[c][i] = heapF32[outputOffset + c * toRetrieve + i];
+          output[c][i] = this.heapF32[outputOffset + c * toRetrieve + i];
         }
       }
     }
-    // Zero-fill any remainder
     for (let c = 0; c < channels; c++) {
       for (let i = toRetrieve; i < frameCount; i++) {
         output[c][i] = 0;
       }
     }
 
-    // Copy to any extra output channels
     for (let c = channels; c < outChannels; c++) {
       output[c].set(output[0]);
     }

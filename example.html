@@ -63,6 +63,27 @@
         </div>
 
         <div class="control-group">
+            <label for="startOffset">Start Offset (s):</label>
+            <input type="number" id="startOffset" min="0" step="0.1" value="0">
+        </div>
+
+        <div class="control-group">
+            <label for="engine">Engine (creation-time):</label>
+            <select id="engine">
+                <option value="faster">Faster (R2)</option>
+                <option value="finer">Finer (R3)</option>
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label for="formant">Formant (creation-time):</label>
+            <select id="formant">
+                <option value="shifted">Shifted</option>
+                <option value="preserved">Preserved</option>
+            </select>
+        </div>
+
+        <div class="control-group">
             <label for="loop">Loop:</label>
             <input type="checkbox" id="loop">
         </div>
@@ -75,6 +96,11 @@
         <div class="control-group">
             <label for="loopEnd">Loop End (s):</label>
             <input type="number" id="loopEnd" min="0" step="0.1" value="0">
+        </div>
+
+        <div class="control-group">
+            <label for="loopFade">Loop Fade (s):</label>
+            <input type="number" id="loopFade" min="0" step="0.1" value="0">
         </div>
     </div>
 
@@ -97,9 +123,13 @@
             playbackRate: document.getElementById('playbackRate'),
             detune: document.getElementById('detune'),
             transpose: document.getElementById('transpose'),
+            startOffset: document.getElementById('startOffset'),
+            engine: document.getElementById('engine'),
+            formant: document.getElementById('formant'),
             loop: document.getElementById('loop'),
             loopStart: document.getElementById('loopStart'),
             loopEnd: document.getElementById('loopEnd'),
+            loopFade: document.getElementById('loopFade'),
             playBtn: document.getElementById('playBtn'),
             stopBtn: document.getElementById('stopBtn'),
             status: document.getElementById('status')
@@ -143,7 +173,10 @@
         };
 
         const createBufferSource = async () => {
-            bufferSource = await PitchShiftBufferSource.create(audioContext);
+            bufferSource = await PitchShiftBufferSource.create(audioContext, {
+                engine: elements.engine.value,
+                formant: elements.formant.value
+            });
             bufferSource.buffer = audioBuffer;
             bufferSource.connect(audioContext.destination);
 
@@ -164,6 +197,7 @@
                 bufferSource.loop = elements.loop.checked;
                 bufferSource.loopStart = parseFloat(elements.loopStart.value);
                 bufferSource.loopEnd = parseFloat(elements.loopEnd.value);
+                bufferSource.loopFade = parseFloat(elements.loopFade.value);
             }
         };
 
@@ -180,7 +214,8 @@
                 await createBufferSource();
                 updateParameters();
 
-                bufferSource.start();
+                const offset = parseFloat(elements.startOffset.value) || 0;
+                bufferSource.start(0, offset);
 
                 elements.playBtn.classList.add('disabled');
                 elements.stopBtn.classList.remove('disabled');
@@ -207,7 +242,7 @@
             });
         });
 
-        [elements.loop, elements.loopStart, elements.loopEnd].forEach(control => {
+        [elements.loop, elements.loopStart, elements.loopEnd, elements.loopFade].forEach(control => {
             control.addEventListener('change', updateParameters);
         });
 

@@ -6,14 +6,12 @@
 extern "C" {
 
 EMSCRIPTEN_KEEPALIVE
-RubberBandState rb_new(unsigned int sampleRate, unsigned int channels) {
-    RubberBandOptions options =
-        RubberBandOptionProcessRealTime |
-        RubberBandOptionPitchHighConsistency |
-        RubberBandOptionThreadingNever |
-        RubberBandOptionSmoothingOn |
-        RubberBandOptionEngineFaster;
-    return rubberband_new(sampleRate, channels, options, 1.0, 1.0);
+RubberBandState rb_new(unsigned int sampleRate, unsigned int channels,
+                       int options) {
+    // Force the flags this streaming/worklet context requires, regardless of
+    // what the caller asked for: real-time processing and no worker threads.
+    options |= RubberBandOptionProcessRealTime | RubberBandOptionThreadingNever;
+    return rubberband_new(sampleRate, channels, (RubberBandOptions)options, 1.0, 1.0);
 }
 
 EMSCRIPTEN_KEEPALIVE

@@ -12,6 +12,7 @@ window.PitchShiftBufferSource = class PitchShiftBufferSource extends AudioWorkle
     this._loop = false;
     this._loopStart = 0;
     this._loopEnd = 0;
+    this._loopFade = 0;
     this._started = false;
 
     this.onended = null;
@@ -19,9 +20,51 @@ window.PitchShiftBufferSource = class PitchShiftBufferSource extends AudioWorkle
     this.port.onmessage = this.handleMessage.bind(this);
   }
 
+  // RubberBand option flags (must match rubberband-c.h). Each group is
+  // mutually exclusive; one value from each is OR'd into the bitmask.
+  // ProcessRealTime and ThreadingNever are forced on in the C++ glue.
+  static optionFlags = {
+    engine:     { faster: 0x00000000, finer: 0x20000000 },
+    pitchMode:  { highSpeed: 0x00000000, highQuality: 0x02000000, highConsistency: 0x04000000 },
+    transients: { crisp: 0x00000000, mixed: 0x00000100, smooth: 0x00000200 },
+    detector:   { compound: 0x00000000, percussive: 0x00000400, soft: 0x00000800 },
+    phase:      { laminar: 0x00000000, independent: 0x00002000 },
+    window:     { standard: 0x00000000, short: 0x00100000, long: 0x00200000 },
+    smoothing:  { off: 0x00000000, on: 0x00800000 },
+    formant:    { shifted: 0x00000000, preserved: 0x01000000 },
+    channels:   { apart: 0x00000000, together: 0x10000000 }
+  };
+
+  // Defaults reproduce the original hardcoded recipe when nothing is passed.
+  static optionDefaults = {
+    engine: 'faster',
+    pitchMode: 'highConsistency',
+    transients: 'crisp',
+    detector: 'compound',
+    phase: 'laminar',
+    window: 'standard',
+    smoothing: 'on',
+    formant: 'shifted',
+    channels: 'apart'
+  };
+
+  static buildOptions(opts = {}) {
+    let bits = 0;
+    for (const group of Object.keys(this.optionDefaults)) {
+      const choice = opts[group] || this.optionDefaults[group];
+      const flags = this.optionFlags[group];
+      if (!(choice in flags)) {
+        throw new RangeError(
+          `Invalid ${group}: "${choice}". Valid values: ${Object.keys(flags).join(', ')}`);
+      }
+      bits |= flags[choice];
+    }
+    return bits;
+  }
+
   static async create(context, options = {}) {
     const response = await fetch('./build/rubberband-wasm.wasm');
-    const wasmModule = await WebAssembly.compile(await response.arrayBuffer());
+    const wasmBytes = await response.arrayBuffer();
 
     try {
       await context.audioWorklet.addModule('./build/processor.js');
@@ -29,7 +72,9 @@ window.PitchShiftBufferSource = class PitchShiftBufferSource extends AudioWorkle
       console.warn('AudioWorklet module already added or failed to add:', error);
     }
 
-    return new PitchShiftBufferSource(context, { ...options, wasmModule });
+    const rubberbandOptions = this.buildOptions(options);
+
+    return new PitchShiftBufferSource(context, { ...options, wasmBytes, rubberbandOptions });
   }
 
   get buffer() {
@@ -75,7 +120,8 @@ window.PitchShiftBufferSource = class PitchShiftBufferSource extends AudioWorkle
       data: {
         loop: this._loop,
         loopStart: this._loopStart,
-        loopEnd: this._loopEnd
+        loopEnd: this._loopEnd,
+        loopFade: this._loopFade
       }
     });
   }
@@ -95,7 +141,8 @@ window.PitchShiftBufferSource = class PitchShiftBufferSource extends AudioWorkle
         data: {
           loop: this._loop,
           loopStart: this._loopStart,
-          loopEnd: this._loopEnd
+          loopEnd: this._loopEnd,
+          loopFade: this._loopFade
         }
       });
     }
@@ -116,7 +163,30 @@ window.PitchShiftBufferSource = class PitchShiftBufferSource extends AudioWorkle
         data: {
           loop: this._loop,
           loopStart: this._loopStart,
-          loopEnd: this._loopEnd
+          loopEnd: this._loopEnd,
+          loopFade: this._loopFade
+        }
+      });
+    }
+  }
+
+  get loopFade() {
+    return this._loopFade;
+  }
+
+  set loopFade(value) {
+    if (typeof value !== 'number' || value < 0) {
+      throw new RangeError('loopFade must be a non-negative number');
+    }
+    this._loopFade = value;
+    if (this._loop) {
+      this.port.postMessage({
+        type: 'setLoop',
+        data: {
+          loop: this._loop,
+          loopStart: this._loopStart,
+          loopEnd: this._loopEnd,
+          loopFade: this._loopFade
         }
       });
     }

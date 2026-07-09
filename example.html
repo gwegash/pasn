@@ -1,255 +1,81 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pitch Shift Buffer Source Example</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        .controls {
-            margin: 20px 0;
-        }
-        .control-group {
-            margin: 10px 0;
-        }
-        label {
-            display: inline-block;
-            width: 120px;
-        }
-        input[type="range"] {
-            width: 200px;
-        }
-        button {
-            margin: 5px;
-            padding: 10px 20px;
-            font-size: 16px;
-        }
-        .disabled {
-            opacity: 0.6;
-            pointer-events: none;
-        }
-    </style>
-</head>
-<body>
-    <h1>AudioBufferSourceNode with Pitch Shifting</h1>
+<!doctype html>
+<meta charset="utf-8">
+<title>Timestretcher — offline time-stretch / pitch-shift</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+  .row { display: flex; align-items: center; gap: .75rem; margin: .6rem 0; }
+  label { width: 11rem; }
+  input[type=range] { flex: 1; }
+  button { padding: .5rem 1rem; }
+  button:disabled { opacity: .5; }
+  #status { margin-top: 1rem; color: #444; white-space: pre-wrap; font: 13px/1.5 monospace; }
+</style>
 
-    <div class="controls">
-        <div class="control-group">
-            <label for="audioFile">Audio File:</label>
-            <input type="file" id="audioFile" accept="audio/*">
-        </div>
+<h1>Timestretcher</h1>
+<p>Load a sample, stretch/pitch it offline, then play the result through a plain
+<code>AudioBufferSourceNode</code>.</p>
 
-        <div class="control-group">
-            <label for="playbackRate">Playback Rate:</label>
-            <input type="range" id="playbackRate" min="0.1" max="3" step="0.1" value="1">
-            <span id="playbackRateValue">1.0</span>
-        </div>
+<div class="row"><label for="file">Audio file</label><input type="file" id="file" accept="audio/*"></div>
+<div class="row"><label for="time">Time ratio <span id="timeV">1.00</span></label>
+  <input type="range" id="time" min="0.25" max="4" step="0.01" value="1"></div>
+<div class="row"><label for="semi">Pitch (semitones) <span id="semiV">0</span></label>
+  <input type="range" id="semi" min="-24" max="24" step="1" value="0"></div>
+<div class="row"><label for="engine">Engine</label>
+  <select id="engine"><option value="finer">Finer (R3)</option><option value="faster">Faster (R2)</option></select></div>
+<div class="row"><label for="formant">Formant</label>
+  <select id="formant"><option value="shifted">Shifted</option><option value="preserved">Preserved</option></select></div>
 
-        <div class="control-group">
-            <label for="detune">Detune (cents):</label>
-            <input type="range" id="detune" min="-1200" max="1200" step="10" value="0">
-            <span id="detuneValue">0</span>
-        </div>
+<div class="row">
+  <button id="stretch" disabled>Stretch</button>
+  <button id="play" disabled>Play</button>
+  <button id="stop" disabled>Stop</button>
+</div>
+<div id="status">Load an audio file to begin.</div>
 
-        <div class="control-group">
-            <label for="transpose">Transpose (semitones):</label>
-            <input type="range" id="transpose" min="-12" max="12" step="1" value="0">
-            <span id="transposeValue">0</span>
-        </div>
+<script type="module">
+  import { Timestretcher } from './src/Timestretcher.js';
 
-        <div class="control-group">
-            <label for="startOffset">Start Offset (s):</label>
-            <input type="number" id="startOffset" min="0" step="0.1" value="0">
-        </div>
+  const $ = (id) => document.getElementById(id);
+  const log = (m) => { $('status').textContent = m; };
 
-        <div class="control-group">
-            <label for="engine">Engine (creation-time):</label>
-            <select id="engine">
-                <option value="faster">Faster (R2)</option>
-                <option value="finer">Finer (R3)</option>
-            </select>
-        </div>
+  let ctx, original, stretched, source;
 
-        <div class="control-group">
-            <label for="formant">Formant (creation-time):</label>
-            <select id="formant">
-                <option value="shifted">Shifted</option>
-                <option value="preserved">Preserved</option>
-            </select>
-        </div>
+  $('time').addEventListener('input', () => $('timeV').textContent = (+$('time').value).toFixed(2));
+  $('semi').addEventListener('input', () => $('semiV').textContent = $('semi').value);
 
-        <div class="control-group">
-            <label for="loop">Loop:</label>
-            <input type="checkbox" id="loop">
-        </div>
+  $('file').addEventListener('change', async (e) => {
+    if (!e.target.files.length) return;
+    ctx = ctx || new AudioContext();
+    await Timestretcher.init();
+    original = await ctx.decodeAudioData(await e.target.files[0].arrayBuffer());
+    $('stretch').disabled = false;
+    log(`Loaded: ${original.duration.toFixed(2)}s, ${original.numberOfChannels}ch @ ${original.sampleRate}Hz`);
+  });
 
-        <div class="control-group">
-            <label for="loopStart">Loop Start (s):</label>
-            <input type="number" id="loopStart" min="0" step="0.1" value="0">
-        </div>
+  $('stretch').addEventListener('click', async () => {
+    $('stretch').disabled = true;
+    log('Stretching…');
+    const t0 = performance.now();
+    stretched = await Timestretcher.timestretch(original, {
+      timeRatio: +$('time').value,
+      semitones: +$('semi').value,
+      engine: $('engine').value,
+      formant: $('formant').value
+    });
+    const ms = (performance.now() - t0).toFixed(0);
+    $('stretch').disabled = false;
+    $('play').disabled = false;
+    log(`Done in ${ms}ms → ${stretched.duration.toFixed(2)}s (${stretched.length} frames)`);
+  });
 
-        <div class="control-group">
-            <label for="loopEnd">Loop End (s):</label>
-            <input type="number" id="loopEnd" min="0" step="0.1" value="0">
-        </div>
+  $('play').addEventListener('click', () => {
+    if (source) try { source.stop(); } catch {}
+    source = new AudioBufferSourceNode(ctx, { buffer: stretched });
+    source.connect(ctx.destination);
+    source.onended = () => { $('stop').disabled = true; };
+    source.start();
+    $('stop').disabled = false;
+  });
 
-        <div class="control-group">
-            <label for="loopFade">Loop Fade (s):</label>
-            <input type="number" id="loopFade" min="0" step="0.1" value="0">
-        </div>
-    </div>
-
-    <div>
-        <button id="playBtn" class="disabled">Play</button>
-        <button id="stopBtn" class="disabled">Stop</button>
-    </div>
-
-    <div id="status"></div>
-
-    <script type="module">
-        import { PitchShiftBufferSource } from './src/PitchShiftBufferSource.js';
-
-        let audioContext;
-        let bufferSource;
-        let audioBuffer;
-
-        const elements = {
-            audioFile: document.getElementById('audioFile'),
-            playbackRate: document.getElementById('playbackRate'),
-            detune: document.getElementById('detune'),
-            transpose: document.getElementById('transpose'),
-            startOffset: document.getElementById('startOffset'),
-            engine: document.getElementById('engine'),
-            formant: document.getElementById('formant'),
-            loop: document.getElementById('loop'),
-            loopStart: document.getElementById('loopStart'),
-            loopEnd: document.getElementById('loopEnd'),
-            loopFade: document.getElementById('loopFade'),
-            playBtn: document.getElementById('playBtn'),
-            stopBtn: document.getElementById('stopBtn'),
-            status: document.getElementById('status')
-        };
-
-        const updateDisplay = () => {
-            document.getElementById('playbackRateValue').textContent = elements.playbackRate.value;
-            document.getElementById('detuneValue').textContent = elements.detune.value;
-            document.getElementById('transposeValue').textContent = elements.transpose.value;
-        };
-
-        const setStatus = (message) => {
-            elements.status.textContent = message;
-        };
-
-        const initAudioContext = async () => {
-            if (!audioContext) {
-                audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                await PitchShiftBufferSource.init(audioContext);
-
-                if (audioContext.state === 'suspended') {
-                    await audioContext.resume();
-                }
-            }
-        };
-
-        const loadAudioFile = async (file) => {
-            try {
-                setStatus('Loading audio file...');
-
-                const arrayBuffer = await file.arrayBuffer();
-                audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-
-                elements.loopEnd.value = audioBuffer.duration;
-
-                elements.playBtn.classList.remove('disabled');
-                setStatus('Audio file loaded successfully');
-
-            } catch (error) {
-                setStatus('Error loading audio file: ' + error.message);
-            }
-        };
-
-        const createBufferSource = () => {
-            // Synchronous construction — init(audioContext) already ran above.
-            bufferSource = new PitchShiftBufferSource(audioContext, {
-                engine: elements.engine.value,
-                formant: elements.formant.value
-            });
-            bufferSource.buffer = audioBuffer;
-            bufferSource.connect(audioContext.destination);
-
-            bufferSource.onended = () => {
-                elements.playBtn.classList.remove('disabled');
-                elements.stopBtn.classList.add('disabled');
-                setStatus('Playback ended');
-            };
-
-            return bufferSource;
-        };
-
-        const updateParameters = () => {
-            if (bufferSource) {
-                bufferSource.playbackRate.value = parseFloat(elements.playbackRate.value);
-                bufferSource.detune.value = parseFloat(elements.detune.value);
-                bufferSource.transpose.value = parseFloat(elements.transpose.value);
-                bufferSource.loop = elements.loop.checked;
-                bufferSource.loopStart = parseFloat(elements.loopStart.value);
-                bufferSource.loopEnd = parseFloat(elements.loopEnd.value);
-                bufferSource.loopFade = parseFloat(elements.loopFade.value);
-            }
-        };
-
-        elements.audioFile.addEventListener('change', async (e) => {
-            if (e.target.files.length > 0) {
-                await initAudioContext();
-                await loadAudioFile(e.target.files[0]);
-            }
-        });
-
-        elements.playBtn.addEventListener('click', async () => {
-            try {
-                await initAudioContext();
-                createBufferSource();
-                updateParameters();
-
-                const offset = parseFloat(elements.startOffset.value) || 0;
-                bufferSource.start(0, offset);
-
-                elements.playBtn.classList.add('disabled');
-                elements.stopBtn.classList.remove('disabled');
-                setStatus('Playing...');
-
-            } catch (error) {
-                setStatus('Error playing audio: ' + error.message);
-            }
-        });
-
-        elements.stopBtn.addEventListener('click', () => {
-            if (bufferSource) {
-                bufferSource.stop();
-                elements.playBtn.classList.remove('disabled');
-                elements.stopBtn.classList.add('disabled');
-                setStatus('Stopped');
-            }
-        });
-
-        [elements.playbackRate, elements.detune, elements.transpose].forEach(slider => {
-            slider.addEventListener('input', () => {
-                updateDisplay();
-                updateParameters();
-            });
-        });
-
-        [elements.loop, elements.loopStart, elements.loopEnd, elements.loopFade].forEach(control => {
-            control.addEventListener('change', updateParameters);
-        });
-
-        updateDisplay();
-        setStatus('Select an audio file to begin');
-    </script>
-</body>
-</html>
+  $('stop').addEventListener('click', () => { if (source) source.stop(); });
+</script>

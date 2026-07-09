@@ -1,17 +1,16 @@
 {
-  "name": "pitch-shift-buffer-source",
-  "version": "2.0.0",
-  "description": "A pitch-shifting AudioBufferSourceNode built with Rubber Band",
+  "name": "timestretcher",
+  "version": "3.0.0",
+  "description": "Offline time-stretching and pitch-shifting with Rubber Band, returning an AudioBuffer",
   "type": "module",
-  "main": "build/pitch-shift-buffer-source.bundled.js",
+  "main": "build/timestretcher.bundled.js",
   "exports": {
-    ".": "./build/pitch-shift-buffer-source.bundled.js",
-    "./url": "./src/PitchShiftBufferSource.js"
+    ".": "./build/timestretcher.bundled.js",
+    "./url": "./src/Timestretcher.js"
   },
   "files": [
     "src/",
-    "build/pitch-shift-buffer-source.bundled.js",
-    "build/processor.js",
+    "build/timestretcher.bundled.js",
     "build/rubberband-wasm.wasm",
     "build.sh",
     "build-bundle.mjs",
@@ -28,7 +27,7 @@
   "devDependencies": {
     "esbuild": "^0.20.0"
   },
-  "keywords": ["webaudio", "audioworklet", "pitch-shifting", "rubberband", "audiobuffersourcenode"],
+  "keywords": ["webaudio", "timestretch", "time-stretching", "pitch-shifting", "rubberband", "audiobuffer"],
   "author": "George Ash",
   "license": "GPL-2.0-or-later",
   "repository": {
